@@ -576,7 +576,16 @@ async function pullCloud(){
   try{
     const {data,error}=await withTimeout(sb.from('records').select('*'),15000);
     if(!error&&data){
-      for(const r of data){ if(r.id===BUDGET_ID) continue; try{ await localPut(r); }catch(_){} }
+      let cloudBudget=null;
+      for(const r of data){ if(r.id===BUDGET_ID){ cloudBudget=r; continue; } try{ await localPut(r); }catch(_){} }
+      // 预算行跨设备同步：云端有→落本地；云端无且本地没有待推的预算变更→删本地（另一台设备清除了预算）
+      try{
+        const budgetPending=_pending.some(x=>x.id===BUDGET_ID)||_pendingDel.includes(BUDGET_ID);
+        if(!budgetPending){
+          if(cloudBudget) await localPut(cloudBudget);
+          else await localDel(BUDGET_ID);
+        }
+      }catch(_){}
     }
   }catch(e){}
   _budgetCache=null; // 云端预算可能变化，下次读取重新拉
