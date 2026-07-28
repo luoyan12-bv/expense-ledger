@@ -556,7 +556,7 @@ async function tryPush(){
 }
 function scheduleSync(){
   _syncChain=_syncChain.then(async()=>{
-    try{ await tryPush(); await pullCloud(); _lastSyncTs=Date.now(); if(currentView!=='add'){ renderList(); renderOverview(); } }catch(e){}
+    try{ await tryPush(); await pullCloud(); _lastSyncTs=Date.now(); try{ renderBudget(); }catch(_){} if(currentView!=='add'){ renderList(); renderOverview(); } }catch(e){}
     updateSyncBar();
   }).catch(()=>updateSyncBar());
 }
