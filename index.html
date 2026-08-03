@@ -53,7 +53,8 @@
 
   /* ============ 预算条 ============ */
   .budget{margin:0 14px 18px; background:var(--card); border-radius:var(--radius);
-    box-shadow:var(--shadow); padding:15px 16px 13px; border:1px solid var(--line-2); position:relative; overflow:hidden;}
+    box-shadow:var(--shadow); padding:15px 16px 13px; border:1px solid var(--line-2); position:relative; overflow:hidden; z-index:2;}
+  .budget::before{content:''; position:absolute; left:0; top:0; right:0; height:3px; background:linear-gradient(90deg,var(--green),#34d399);}
   .budget .b-row{display:flex; align-items:flex-end; justify-content:space-between;}
   .budget .b-left{display:flex; flex-direction:column;}
   .budget .b-label{font-size:12px; color:var(--ink-3); font-weight:700; display:flex; align-items:center; gap:5px;}
@@ -141,6 +142,12 @@
   .chip:active{background:#f0f2f4;}
   .chip.on{background:var(--green); color:#fff; border-color:var(--green); box-shadow:0 3px 8px rgba(7,193,96,.25);}
   .chip.type{display:inline-flex; align-items:center; gap:4px;}
+  .month-filter-btn{display:inline-flex; align-items:center; gap:5px; background:var(--green-l); color:var(--green-d); border:1px solid var(--green); border-radius:999px; padding:6px 12px; font-size:12px; font-weight:700; cursor:pointer;}
+  .month-panel{display:none; background:var(--card); border:1px solid var(--line-2); border-radius:16px; padding:12px; margin:-8px 0 14px; box-shadow:var(--shadow);}
+  .month-panel.show{display:block;}
+  .month-panel .t{display:flex; align-items:center; justify-content:space-between; font-size:12.5px; font-weight:700; color:var(--ink-2); margin-bottom:10px;}
+  .month-panel .close{font-size:18px; color:var(--ink-3); cursor:pointer; width:26px; text-align:center;}
+  .month-list{display:flex; gap:8px; flex-wrap:wrap;}
 
   /* ============ 列表 ============ */
   .rec{background:var(--card); border:1px solid var(--line-2); border-radius:16px; box-shadow:var(--shadow-sm);
@@ -320,7 +327,11 @@
 
   <!-- 账单 -->
   <section class="view" id="view-list">
-    <div class="sec-title"><span>账单明细</span><span class="count" id="listCount">0 笔</span></div>
+    <div class="sec-title"><span>账单明细</span><span class="count" id="listCount">0 笔</span><span class="month-filter-btn" id="monthFilterBtn">📅 全部 ▾</span></div>
+    <div class="month-panel" id="monthPanel">
+      <div class="t"><span>选择月份</span><span class="close" id="monthPanelClose">×</span></div>
+      <div class="month-list" id="monthList"></div>
+    </div>
     <div class="filters">
       <span class="chip on" data-status="all" id="stAll">全部</span>
       <span class="chip" data-status="0" id="stNo">未报销</span>
@@ -946,6 +957,59 @@ function setStatus(s){
   document.getElementById(s==='all'?'stAll':(s==='0'?'stNo':'stYes')).classList.add('on');
   renderList();
 }
+
+/* ---------- 账单明细区：月份查询面板 ---------- */
+async function getMonthOptions(){
+  const all=await dbAll();
+  const set=new Set();
+  all.forEach(r=>{ if(r.id!==BUDGET_ID && r.date && r.date.length>=7) set.add(r.date.slice(0,7)); });
+  return Array.from(set).sort().reverse();
+}
+async function renderMonthPanel(){
+  const box=document.getElementById('monthList'); box.innerHTML='';
+  const months=await getMonthOptions();
+  const all=document.createElement('span'); all.className='chip'+(state.month===''?' on':''); all.textContent='全部账单';
+  all.onclick=()=>setMonth(''); box.appendChild(all);
+  for(const m of months){
+    const c=document.createElement('span'); c.className='chip'+(state.month===m?' on':''); c.textContent=fmtMonth(m);
+    c.onclick=()=>setMonth(m); box.appendChild(c);
+  }
+  const custom=document.createElement('span'); custom.className='chip'; custom.textContent='✎ 输入月份';
+  custom.onclick=()=>{
+    const v=prompt('输入要查看的月份（格式 YYYY-MM）：',state.month||'');
+    if(v===null) return;
+    const m=v.trim();
+    if(/^\d{4}-\d{2}$/.test(m)) setMonth(m);
+    else if(m!=='') toast('格式不对，如 2026-07');
+  };
+  box.appendChild(custom);
+}
+function setMonth(m){
+  state.month=m;
+  document.getElementById('monthLabel').textContent= m? fmtMonth(m):'全部账单';
+  document.getElementById('monthPanel').classList.remove('show');
+  updateMonthBtn(); renderMonthPanel(); renderList(); renderOverview(); updateExportDesc();
+}
+function updateMonthBtn(){
+  const btn=document.getElementById('monthFilterBtn');
+  if(btn) btn.innerHTML=`📅 ${state.month?fmtMonth(state.month):'全部'} ▾`;
+}
+document.getElementById('monthFilterBtn').onclick=()=>{
+  const p=document.getElementById('monthPanel');
+  p.classList.toggle('show');
+  if(p.classList.contains('show')) renderMonthPanel();
+};
+document.getElementById('monthPanelClose').onclick=()=>document.getElementById('monthPanel').classList.remove('show');
+
+/* 点击页面其他地方关闭月份面板 */
+document.addEventListener('click',(e)=>{
+  const p=document.getElementById('monthPanel');
+  const b=document.getElementById('monthFilterBtn');
+  if(p && p.classList.contains('show') && !p.contains(e.target) && e.target!==b && !b.contains(e.target)){
+    p.classList.remove('show');
+  }
+});
+
 document.getElementById('estAll').onclick=()=>setEStatus('all');
 document.getElementById('estNo').onclick=()=>setEStatus('0');
 document.getElementById('estYes').onclick=()=>setEStatus('1');
@@ -1054,6 +1118,7 @@ document.getElementById('importAllFile').onchange=async()=>{
   document.getElementById('date').value=todayStr();
   renderTypeGrid();renderTypeFilter();
   document.getElementById('monthLabel').textContent= state.month? fmtMonth(state.month) : '全部账单';
+  updateMonthBtn();
   if(sb){
     // 先把本设备遗留的本地记录入队（确保离线记的也会补传上云），再启动同步调度
     try{ const local=await localAll(); local.forEach(r=>{ if(r.id!==BUDGET_ID) enqueueCloud(r); }); }catch(e){}
