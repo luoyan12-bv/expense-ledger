@@ -791,6 +791,7 @@ document.getElementById('saveBtn').onclick=async()=>{
 /* ---------- 账单列表 ---------- */
 async function renderList(){
   let recs=await dbAll();
+  recs=recs.filter(r=>r.id!==BUDGET_ID);
   if(state.month) recs=recs.filter(r=>r.date&&r.date.startsWith(state.month));
   if(state.typeFilter!=='all') recs=recs.filter(r=>r.type===state.typeFilter);
   if(state.statusFilter!=='all') recs=recs.filter(r=>String(r.status)===state.statusFilter);
