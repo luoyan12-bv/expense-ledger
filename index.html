@@ -576,16 +576,7 @@ async function pullCloud(){
   try{
     const {data,error}=await withTimeout(sb.from('records').select('*'),15000);
     if(!error&&data){
-      let cloudBudget=null;
-      for(const r of data){ if(r.id===BUDGET_ID){ cloudBudget=r; continue; } try{ await localPut(r); }catch(_){} }
-      // 预算行跨设备同步：云端有→落本地；云端无且本地没有待推的预算变更→删本地（另一台设备清除了预算）
-      try{
-        const budgetPending=_pending.some(x=>x.id===BUDGET_ID)||_pendingDel.includes(BUDGET_ID);
-        if(!budgetPending){
-          if(cloudBudget) await localPut(cloudBudget);
-          else await localDel(BUDGET_ID);
-        }
-      }catch(_){}
+      for(const r of data){ if(r.id===BUDGET_ID) continue; try{ await localPut(r); }catch(_){} }
     }
   }catch(e){}
   _budgetCache=null; // 云端预算可能变化，下次读取重新拉
@@ -599,15 +590,32 @@ let _budgetCache=null;
 async function loadBudget(){
   if(_budgetCache!==null) return _budgetCache;
   let v=0;
+  // 优先从独立的 budget 表读取（预算与账单数据彻底分离）
+  try{
+    const {data,error}=await withTimeout(sb.from('budget').select('amount').eq('id','current').maybeSingle(),10000);
+    if(!error && data && data.amount>0){ v=Number(data.amount); _budgetCache=v; return v; }
+  }catch(e){}
+  // 回退：兼容尚未建 budget 表时的旧承载行
   try{ const all=await dbAll(); const b=all.find(r=>r.id===BUDGET_ID); if(b&&b.amount>0) v=Number(b.amount); }catch(e){}
   _budgetCache=v; return v;
 }
 async function saveBudget(val){
   _budgetCache=(val>0)?val:0;
-  if(val>0){
-    await dbPut({id:BUDGET_ID, type:'budget', amount:val, date:'', remark:'', images:[], status:0});
+  let okNew=false;
+  if(sb){
+    try{
+      await withTimeout(sb.from('budget').upsert({id:'current', amount:Number(val)||0}, {onConflict:'id'}),10000);
+      okNew=true;
+    }catch(e){ okNew=false; }
+  }
+  if(okNew){
+    // 预算已写入独立表，清理遗留的旧承载行（云端 + 本地）
+    try{ await withTimeout(sb.from('records').delete().eq('id',BUDGET_ID),10000); }catch(_){}
+    try{ await dbDel(BUDGET_ID); }catch(_){}
   }else{
-    await dbDel(BUDGET_ID);
+    // 回退：用 records 里的 __budget__ 行承载（保证未建表时也能同步）
+    if(val>0){ await dbPut({id:BUDGET_ID, type:'budget', amount:val, date:'', remark:'', images:[], status:0}); }
+    else { try{ await dbDel(BUDGET_ID); }catch(_){} }
   }
 }
 
