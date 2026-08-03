@@ -254,7 +254,7 @@
   <div class="sync-bar" id="syncBar">正在连接云端…</div>
 
   <div class="overview">
-    <div class="ov-card"><div class="v" id="sumTotal">0</div><div class="l">全部合计</div></div>
+    <div class="ov-card"><div class="v" id="sumTotal">0</div><div class="l" id="sumTotalLabel">全部合计</div></div>
     <div class="ov-card"><div class="v pending" id="sumPending">0</div><div class="l">待报销</div></div>
     <div class="ov-card"><div class="v done" id="sumDone">0</div><div class="l">已报销</div></div>
   </div>
@@ -612,8 +612,7 @@ async function saveBudget(val){
 }
 
 /* ---------- 状态 ---------- */
-let state={typeIndex:0, images:[], month:monthStr(new Date()), statusFilter:'all', typeFilter:'all', estatus:'all'};
-function monthStr(d){return `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}`;}
+let state={typeIndex:0, images:[], month:'', statusFilter:'all', typeFilter:'all', estatus:'all'};
 function fmtMonth(m){const [y,mo]=m.split('-');return `${y}年${parseInt(mo,10)}月`;}
 function todayStr(){const d=new Date();return `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}-${('0'+d.getDate()).slice(-2)}`;}
 function fmtMoney(n){return (n||0).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});}
@@ -792,6 +791,7 @@ document.getElementById('saveBtn').onclick=async()=>{
 /* ---------- 账单列表 ---------- */
 async function renderList(){
   let recs=await dbAll();
+  if(state.month) recs=recs.filter(r=>r.date&&r.date.startsWith(state.month));
   if(state.typeFilter!=='all') recs=recs.filter(r=>r.type===state.typeFilter);
   if(state.statusFilter!=='all') recs=recs.filter(r=>String(r.status)===state.statusFilter);
   recs.sort((a,b)=> (b.date>a.date?1:b.date<a.date?-1:(b.createTime||0)-(a.createTime||0)));
@@ -818,10 +818,12 @@ async function renderList(){
   });
 }
 async function renderOverview(){
-  const recs=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
+  const recs0=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
+  const recs= state.month ? recs0.filter(r=>r.date&&r.date.startsWith(state.month)) : recs0;
   const total=recs.reduce((s,r)=>s+(r.amount||0),0);
   const done=recs.filter(r=>r.status).reduce((s,r)=>s+(r.amount||0),0);
   document.getElementById('sumTotal').textContent='¥'+fmtMoney(total);
+  const label=document.getElementById('sumTotalLabel'); if(label) label.textContent= state.month? fmtMonth(state.month)+'合计' : '全部合计';
   document.getElementById('sumDone').textContent='¥'+fmtMoney(done);
   document.getElementById('sumPending').textContent='¥'+fmtMoney(total-done);
   renderBudget();
@@ -893,6 +895,7 @@ window.__zoom=(src)=>{const w=window.open('');if(w)w.document.write(`<img src="$
 /* ---------- 导出 ---------- */
 document.getElementById('exportBtn').onclick=async()=>{
   let recs=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
+  if(state.month) recs=recs.filter(r=>r.date&&r.date.startsWith(state.month));
   if(state.estatus!=='all') recs=recs.filter(r=>String(r.status)===state.estatus);
   if(recs.length===0){toast('没有可导出的记录');return;}
   recs.sort((a,b)=> (b.date>a.date?1:b.date<a.date?-1:(b.createTime||0)-(a.createTime||0)));
@@ -903,12 +906,12 @@ document.getElementById('exportBtn').onclick=async()=>{
     const ws=XLSX.utils.json_to_sheet(rows);
     const wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,ws,'报销单');
-    XLSX.writeFile(wb,`报销单_全部.xlsx`);
+    XLSX.writeFile(wb,`报销单_${state.month||'全部'}.xlsx`);
   }else{
     let csv='\ufeff日期,类型,金额,备注,发票号,报销状态,记账时间\n';
     rows.forEach(r=>{csv+=`${r.日期},${r.类型},${r.金额},"${r.备注}",${r.发票号},${r.报销状态},${r.记账时间}\n`;});
     const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`报销单_全部.csv`;a.click();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`报销单_${state.month||'全部'}.csv`;a.click();
   }
 };
 function loadSheetJS(){return new Promise(res=>{if(window.XLSX)return res(true);const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=()=>res(true);s.onerror=()=>res(false);setTimeout(()=>res(false),4000);document.head.appendChild(s);});}
@@ -944,15 +947,24 @@ function setEStatus(s){
   updateExportDesc();
 }
 async function updateExportDesc(){
-  document.getElementById('expDesc').textContent=`全部 · ${state.estatus==='all'?'全部':(state.estatus==='0'?'仅未报销':'仅已报销')}`;
+  const m = state.month ? fmtMonth(state.month) : '全部';
+  document.getElementById('expDesc').textContent=`${m} · ${state.estatus==='all'?'全部':(state.estatus==='0'?'仅未报销':'仅已报销')}`;
   let recs=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
+  if(state.month) recs=recs.filter(r=>r.date&&r.date.startsWith(state.month));
   if(state.estatus!=='all') recs=recs.filter(r=>String(r.status)===state.estatus);
   document.getElementById('expCount').textContent=recs.length;
 }
 
-/* ---------- 月份选择（已停用，当前默认显示全部账单） ---------- */
+/* ---------- 月份选择（默认全部账单，可切到指定月份） ---------- */
 document.getElementById('monthPick').onclick=()=>{
-  toast('当前显示全部账单');
+  const v=prompt('输入要查看的月份（格式 YYYY-MM，留空为全部账单）：',state.month||'');
+  if(v===null)return;
+  const m=v.trim();
+  if(m===''){state.month='';}
+  else if(/^\d{4}-\d{2}$/.test(m)){state.month=m;}
+  else{toast('格式不对，如 2026-07');return;}
+  document.getElementById('monthLabel').textContent= state.month? fmtMonth(state.month) : '全部账单';
+  renderList();renderOverview();updateExportDesc();
 };
 
 /* ---------- 总预算设置（存云端，跨设备同步）---------- */
@@ -1032,7 +1044,7 @@ document.getElementById('importAllFile').onchange=async()=>{
 (async function init(){
   document.getElementById('date').value=todayStr();
   renderTypeGrid();renderTypeFilter();
-  document.getElementById('monthLabel').textContent='全部账单';
+  document.getElementById('monthLabel').textContent= state.month? fmtMonth(state.month) : '全部账单';
   if(sb){
     // 先把本设备遗留的本地记录入队（确保离线记的也会补传上云），再启动同步调度
     try{ const local=await localAll(); local.forEach(r=>{ if(r.id!==BUDGET_ID) enqueueCloud(r); }); }catch(e){}
