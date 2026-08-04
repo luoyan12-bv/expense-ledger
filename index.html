@@ -420,6 +420,13 @@
         <button class="btn btn-green btn-sm" id="feishuSave" style="flex:0 0 auto;">保存</button>
       </div>
       <div style="height:18px;"></div>
+      <div class="card-title" style="font-size:15px;">🩺 版本与诊断</div>
+      <div class="hint" style="text-align:left; margin:0 0 10px; line-height:1.8;" id="diagBox">检测中…</div>
+      <button class="btn btn-ghost btn-sm" id="forceReload" style="width:100%;">🔄 强制更新到最新版</button>
+      <div class="hint" style="text-align:left; margin:8px 0 0; line-height:1.7;">
+        手机上如果功能和电脑不一致，多半是拿到了缓存的旧页面，点上面这个按钮即可。
+      </div>
+      <div style="height:18px;"></div>
       <button class="btn btn-ghost" id="dataClose" style="width:100%;">关闭</button>
     </div>
   </div>
@@ -434,6 +441,9 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+/* ---------- 版本标识（改动后务必 +1，方便判断设备是否拿到最新页面）---------- */
+const APP_VER='v7';
+const APP_DATE='2026-08-04';
 /* ---------- 云端数据库配置（Supabase；留空则仅本地，不影响使用）---------- */
 const SUPABASE_URL = 'https://wvniuyfnuyrebowjlxbi.supabase.co';        // 例：https://xxxx.supabase.co
 const SUPABASE_ANON_KEY = 'sb_publishable_Ku0efv21pS5y5rS4cQDXpA_-ifqshOX';   // Supabase 项目的 anon / public key
@@ -521,12 +531,29 @@ async function localAll(){const db=await openDB();return new Promise((res,rej)=>
 async function localPut(rec){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(rec);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
 async function localDel(id){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete(id);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
 
-// 云端表实测只有这 7 列（id,type,amount,date,remark,images,status）。typeName/invoiceNo/createTime 在云端根本不存在，推送时绝不能带——否则整批被 400 拒绝、_pending 永远清不掉、一直显示“上传中”
-const CLOUD_COLS=['id','type','amount','date','remark','images','status'];
-function cloudRec(rec){const o={};CLOUD_COLS.forEach(c=>{if(c in rec)o[c]=rec[c];});
+/* 云端表实测共 10 列，但 typename/invoiceno/createtime 是【全小写】命名。
+   PostgREST 严格区分大小写：推驼峰 typeName 会导致整批 400 被拒 → _pending 永远清不掉 → 一直“上传中”。
+   所以本地驼峰 ↔ 云端小写必须显式映射。*/
+const CLOUD_MAP={id:'id', type:'type', typeName:'typename', amount:'amount', date:'date',
+  invoiceNo:'invoiceno', remark:'remark', images:'images', status:'status', createTime:'createtime'};
+function cloudRec(rec){
+  const o={};
+  for(const k in CLOUD_MAP){ if(k in rec && rec[k]!==undefined) o[CLOUD_MAP[k]]=rec[k]; }
   // 单张 base64 超过 ~200KB 不上传，避免大图拖垮整批同步（图片本地仍保留可看）
   if(Array.isArray(o.images)) o.images=o.images.map(s=>(typeof s==='string'&&s.length>200000)?'':s).filter(Boolean);
-  return o;}
+  return o;
+}
+// 云端行 → 本地结构（小写列名还原成驼峰；status 强制数值，避免文本 "0" 被判成已报销）
+function localRec(row){
+  const o=Object.assign({},row);
+  if('typename' in o){ if(o.typename!=null) o.typeName=o.typename; delete o.typename; }
+  if('invoiceno' in o){ if(o.invoiceno!=null) o.invoiceNo=o.invoiceno; delete o.invoiceno; }
+  if('createtime' in o){ if(o.createtime!=null) o.createTime=Number(o.createtime)||o.createtime; delete o.createtime; }
+  o.status=Number(o.status)||0;
+  o.amount=Number(o.amount)||0;
+  if(!Array.isArray(o.images)) o.images=o.images?[].concat(o.images):[];
+  return o;
+}
 // 统一读写接口：本地优先（秒存、必成功），云端在后台静默同步，读取只走本地 → 快且不卡 UI
 function withTimeout(p, ms){
   return Promise.race([p, new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))]);
@@ -555,7 +582,7 @@ function updateSyncBar(){
     el.textContent='⚠️ '+n+' 笔待同步 · 点此重试';
     el.title=_lastPushError ? ('上次同步失败：'+_lastPushError+'（若一直失败，请改用手机/电脑自带浏览器打开本链接）') : '点此立即同步到云端';
   }
-  else { el.className='sync-bar ok'; el.textContent='☁️ 已同步'+( _lastSyncTs?(' · '+fmtTime(_lastSyncTs)):''); el.title=''; }
+  else { el.className='sync-bar ok'; el.textContent='☁️ 已同步'+( _lastSyncTs?(' · '+fmtTime(_lastSyncTs)):'')+' · '+APP_VER; el.title='版本 '+APP_VER+'（'+APP_DATE+'）'; }
 }
 let _lastPushError='';
 async function tryPush(){
@@ -593,13 +620,13 @@ async function pullCloud(){
     const {data,error}=await withTimeout(sb.from('records').select('*'),15000);
     if(!error&&data){
       let cloudBudget=null;
-      for(const r of data){ if(r.id===BUDGET_ID){ cloudBudget=r; continue; } try{ await localPut(r); }catch(_){} }
-      /* 预算兼容：未建独立 budget 表时，records 里的 __budget__ 行仍是唯一数据源，
-         必须落到本地，否则新设备(手机)永远拉不到预算。本机有未推送的预算变更时不覆盖。 */
+      for(const r of data){ if(r.id===BUDGET_ID){ cloudBudget=r; continue; } try{ await localPut(localRec(r)); }catch(_){} }
+      /* 预算就存在 records 的 __budget__ 行里（唯一数据源），必须落到本地，
+         否则新设备(手机)永远拉不到预算。本机有未推送的预算变更时不覆盖。 */
       try{
         const budgetPending=_pending.some(x=>x.id===BUDGET_ID)||_pendingDel.includes(BUDGET_ID);
         if(!budgetPending){
-          if(cloudBudget) await localPut(cloudBudget);
+          if(cloudBudget) await localPut(localRec(cloudBudget));
           else await localDel(BUDGET_ID);
         }
       }catch(_){}
@@ -613,52 +640,32 @@ async function pullCloud(){
    用一条特殊记录 id='__budget__' 承载，type='budget'、amount=预算值；所有统计/列表/导出均按 id 排除它。 */
 const BUDGET_ID='__budget__';
 let _budgetCache=null;
-let _budgetTableMissing=false; // 独立 budget 表不存在时置 true，避免每次都发无效请求
+let _budgetFrom='';  // 诊断用：预算取自 本地 / 云端 / 未设置
+/* 预算只用 records 表里的 __budget__ 这一行承载（云端实测可读可写）。
+   曾试过独立 budget 表，但该表不存在时 supabase-js 是「返回 error 对象」而非抛异常，
+   旧代码误判写入成功、反手把 records 里真正的预算删了 → 预算不跨设备。已彻底移除该路径。*/
 async function loadBudget(){
   if(_budgetCache!==null) return _budgetCache;
   let v=0;
-  // 优先从独立的 budget 表读取（预算与账单数据彻底分离）
-  if(sb && !_budgetTableMissing){
-    try{
-      const {data,error}=await withTimeout(sb.from('budget').select('amount').eq('id','current').maybeSingle(),10000);
-      if(error){ if(String(error.message||'').indexOf('budget')>=0||error.code==='PGRST205'||error.code==='42P01') _budgetTableMissing=true; }
-      else if(data && data.amount>0){ v=Number(data.amount); _budgetCache=v; return v; }
-    }catch(e){ _budgetTableMissing=true; }
-  }
-  // 回退1：本地承载行
-  try{ const all=await dbAll(); const b=all.find(r=>r.id===BUDGET_ID); if(b&&b.amount>0) v=Number(b.amount); }catch(e){}
-  // 回退2：本地没有就直接查云端 records（新设备首次打开、还没拉完数据时也能立刻显示预算）
+  // 1) 本地承载行（秒开）
+  try{ const all=await dbAll(); const b=all.find(r=>r.id===BUDGET_ID); if(b&&Number(b.amount)>0){ v=Number(b.amount); _budgetFrom='本地'; } }catch(e){}
+  // 2) 本地没有 → 直查云端（新设备/手机首次打开立刻显示，不必等同步轮次）
   if(!v && sb){
     try{
       const {data,error}=await withTimeout(sb.from('records').select('amount').eq('id',BUDGET_ID).maybeSingle(),10000);
-      if(!error && data && data.amount>0){
-        v=Number(data.amount);
+      if(!error && data && Number(data.amount)>0){
+        v=Number(data.amount); _budgetFrom='云端';
         try{ await localPut({id:BUDGET_ID,type:'budget',amount:v,date:'',remark:'',images:[],status:0}); }catch(_){}
       }
     }catch(e){}
   }
+  if(!v) _budgetFrom='未设置';
   _budgetCache=v; return v;
 }
 async function saveBudget(val){
   _budgetCache=(val>0)?val:0;
-  let okNew=false;
-  if(sb && !_budgetTableMissing){
-    try{
-      // 注意：表不存在时 supabase-js 是「返回 error」而非抛异常，必须判 error，
-      // 否则会误判成功并删掉 records 里的承载行，导致预算丢失且不跨设备。
-      const {error}=await withTimeout(sb.from('budget').upsert({id:'current', amount:Number(val)||0}, {onConflict:'id'}),10000);
-      if(error){ okNew=false; _budgetTableMissing=true; } else { okNew=true; }
-    }catch(e){ okNew=false; }
-  }
-  if(okNew){
-    // 预算已写入独立表，清理遗留的旧承载行（云端 + 本地）
-    try{ await withTimeout(sb.from('records').delete().eq('id',BUDGET_ID),10000); }catch(_){}
-    try{ await dbDel(BUDGET_ID); }catch(_){}
-  }else{
-    // 回退：用 records 里的 __budget__ 行承载（保证未建表时也能同步）
-    if(val>0){ await dbPut({id:BUDGET_ID, type:'budget', amount:val, date:'', remark:'', images:[], status:0}); }
-    else { try{ await dbDel(BUDGET_ID); }catch(_){} }
-  }
+  if(val>0){ await dbPut({id:BUDGET_ID, type:'budget', amount:Number(val), date:'', remark:'', images:[], status:0}); }
+  else { try{ await dbDel(BUDGET_ID); }catch(_){} }
 }
 
 /* ---------- 状态 ---------- */
@@ -1117,6 +1124,40 @@ document.getElementById('dataBtn').onclick=()=>{
   const inp=document.getElementById('feishuWebhook');
   if(inp){ try{ inp.value=localStorage.getItem(FEISHU_KEY_KEY)||''; }catch(e){ inp.value=''; } }
   document.getElementById('dataMask').classList.add('show');
+  renderDiag();
+};
+/* 诊断面板：一眼看清本机跑的是哪个版本、预算取自哪里、云端通不通 */
+async function renderDiag(){
+  const box=document.getElementById('diagBox'); if(!box) return;
+  box.innerHTML='检测中…';
+  let cloudBudgetTxt='—', cloudCnt='—';
+  if(sb){
+    try{
+      const {data,error}=await withTimeout(sb.from('records').select('id,amount'),12000);
+      if(!error&&data){
+        cloudCnt=data.filter(r=>r.id!==BUDGET_ID).length+' 笔';
+        const b=data.find(r=>r.id===BUDGET_ID);
+        cloudBudgetTxt=b?('¥'+fmtMoney(Number(b.amount)||0)):'未设置';
+      }else{ cloudCnt='读取失败'; }
+    }catch(e){ cloudCnt='连接超时'; }
+  }
+  const localCnt=(await dbAll()).filter(r=>r.id!==BUDGET_ID).length;
+  const budget=await loadBudget();
+  box.innerHTML=
+    '版本：<b style="color:var(--green);">'+APP_VER+'</b>（'+APP_DATE+'）<br>'+
+    '云端连接：'+(sb?'✅ 已连接':'❌ 未连接')+'<br>'+
+    '本机记录：<b>'+localCnt+' 笔</b> ｜ 云端记录：<b>'+cloudCnt+'</b><br>'+
+    '本机预算：<b>'+(budget>0?('¥'+fmtMoney(budget)):'未设置')+'</b>（来源：'+(_budgetFrom||'—')+'）<br>'+
+    '云端预算：<b>'+cloudBudgetTxt+'</b><br>'+
+    (_lastPushError?('<span style="color:#e64340;">上次同步报错：'+_lastPushError+'</span>'):'同步状态：正常');
+}
+/* 强制更新：清掉所有缓存与 SW，再带时间戳重载，专治手机拿旧页面 */
+document.getElementById('forceReload').onclick=async()=>{
+  toast('正在清除缓存…');
+  try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(e){}
+  try{ if(navigator.serviceWorker){ const rs=await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r=>r.unregister())); } }catch(e){}
+  const base=location.href.split('?')[0].split('#')[0];
+  location.replace(base+'?fresh='+Date.now());
 };
 document.getElementById('feishuSave').onclick=()=>{
   const v=document.getElementById('feishuWebhook').value.trim();
