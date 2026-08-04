@@ -63,7 +63,9 @@
   .budget .b-remain{font-size:27px; font-weight:800; letter-spacing:-.6px; color:var(--green-d); line-height:1.1; margin-top:2px;}
   .budget .bar{height:8px; background:var(--line-2); border-radius:999px; margin:13px 0 8px; overflow:hidden;}
   .budget .bar-fill{height:100%; width:0%; background:var(--green); border-radius:999px; transition:width .45s cubic-bezier(.22,1,.36,1), background .3s ease;}
-  .budget .b-sub{display:flex; justify-content:space-between; font-size:12px; color:var(--ink-2); font-weight:700;}
+  .budget .b-sub{display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12px; color:var(--ink-2); font-weight:700; line-height:1.5;}
+  .budget .b-sub #usedVal{flex:1; min-width:0;}
+  .budget .b-sub #pctVal{flex:none; white-space:nowrap;}
   .budget .b-edit{margin-top:11px; text-align:center; font-size:12.5px; color:var(--green-d); font-weight:800;
     background:var(--green-l); border-radius:10px; padding:9px; cursor:pointer; user-select:none; transition:background .15s ease;}
   .budget .b-edit:active{background:#d8f5e6;}
@@ -798,7 +800,7 @@ document.getElementById('saveBtn').onclick=async()=>{
   const budget=await loadBudget();
   if(budget>0){
     const all=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
-    const total=all.reduce((s,r)=>s+(r.amount||0),0);
+    const total=all.filter(r=>Number(r.status)!==1).reduce((s,r)=>s+(r.amount||0),0);
     const remain=budget-total;
     msg += ' · 剩余 ¥'+fmtMoney(remain);
   }
@@ -841,18 +843,19 @@ async function renderOverview(){
   const recs0=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
   const recs= state.month ? recs0.filter(r=>r.date&&r.date.startsWith(state.month)) : recs0;
   const total=recs.reduce((s,r)=>s+(r.amount||0),0);
-  const done=recs.filter(r=>r.status).reduce((s,r)=>s+(r.amount||0),0);
+  const done=recs.filter(r=>Number(r.status)===1).reduce((s,r)=>s+(r.amount||0),0);
   document.getElementById('sumTotal').textContent='¥'+fmtMoney(total);
   const label=document.getElementById('sumTotalLabel'); if(label) label.textContent= state.month? fmtMonth(state.month)+'合计' : '全部合计';
   document.getElementById('sumDone').textContent='¥'+fmtMoney(done);
   document.getElementById('sumPending').textContent='¥'+fmtMoney(total-done);
   renderBudget();
 }
-// 总预算：按全部记账（跨月份）累计已用来算剩余
+// 总预算：只统计「未报销」的钱（已报销的会退回来，不占预算）
 async function renderBudget(){
   const budget=await loadBudget();
   const all=(await dbAll()).filter(r=>r.id!==BUDGET_ID);
-  const used=all.reduce((s,r)=>s+(r.amount||0),0);
+  const used=all.filter(r=>Number(r.status)!==1).reduce((s,r)=>s+(r.amount||0),0);
+  const backed=all.filter(r=>Number(r.status)===1).reduce((s,r)=>s+(r.amount||0),0);
   const bVal=document.getElementById('budgetVal');
   const rVal=document.getElementById('remainVal');
   const bar=document.getElementById('barFill');
@@ -863,7 +866,7 @@ async function renderBudget(){
     bVal.textContent='未设置';
     rVal.textContent='—'; rVal.style.color='';
     bar.style.width='0%'; bar.style.background='var(--green)';
-    usedEl.textContent='累计已用 ¥'+fmtMoney(used);
+    usedEl.textContent='未报销占用 ¥'+fmtMoney(used)+(backed>0?' · 已报销退回 ¥'+fmtMoney(backed):'');
     pctEl.textContent='—';
     editEl.textContent='＋ 设置总预算';
   }else{
@@ -874,7 +877,7 @@ async function renderBudget(){
     const pct=Math.min(100, budget>0?(used/budget*100):0);
     bar.style.width=pct+'%';
     bar.style.background = used>budget ? 'var(--red)' : (pct>=80 ? '#faad14' : 'var(--green)');
-    usedEl.textContent='累计已用 ¥'+fmtMoney(used);
+    usedEl.textContent='未报销占用 ¥'+fmtMoney(used)+(backed>0?' · 已报销退回 ¥'+fmtMoney(backed):'');
     pctEl.textContent=Math.round(budget>0?(used/budget*100):0)+'%';
     editEl.textContent='✎ 修改总预算';
   }
@@ -901,10 +904,10 @@ async function openDetail(id){
     <div class="row"><span class="k">记账时间</span><span class="v">${fmtDateTime(r.createTime)}</span></div>
     ${r.images&&r.images.length?`<div class="imgs">${r.images.map(s=>`<img src="${s}" onclick="window.__zoom('${s}')">`).join('')}</div>`:'<div class="hint" style="text-align:left;margin-top:14px;">无截图</div>'}
     <div class="acts">
-      <button class="btn btn-ghost" id="toggleStatus">${r.status?'↩️ 标为未报销':'✅ 标为已报销'}</button>
+      <button class="btn btn-ghost" id="toggleStatus">${Number(r.status)===1?'↩️ 标为未报销':'✅ 标为已报销'}</button>
       <button class="btn btn-ghost" id="delRec" style="color:var(--red);">🗑️ 删除</button>
     </div>`;
-  sheet.querySelector('#toggleStatus').onclick=async()=>{r.status=r.status?0:1;await dbPut(r);closeDetail();renderList();renderOverview();toast('已更新');};
+  sheet.querySelector('#toggleStatus').onclick=async()=>{const wasDone=Number(r.status)===1;r.status=wasDone?0:1;await dbPut(r);closeDetail();renderList();renderOverview();toast(wasDone?'已改回未报销':'已标为已报销 · 预算已退回 ¥'+fmtMoney(r.amount||0));};
   sheet.querySelector('#delRec').onclick=async()=>{if(confirm('确定删除这笔记录？')){await dbDel(id);closeDetail();renderList();renderOverview();toast('已删除');}};
   document.getElementById('mask').classList.add('show');
 }
