@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="theme-color" content="#07c160" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>报销记账本</title>
 <style>
   /* ============ 设计令牌 ============ */
@@ -589,7 +592,17 @@ async function pullCloud(){
   try{
     const {data,error}=await withTimeout(sb.from('records').select('*'),15000);
     if(!error&&data){
-      for(const r of data){ if(r.id===BUDGET_ID) continue; try{ await localPut(r); }catch(_){} }
+      let cloudBudget=null;
+      for(const r of data){ if(r.id===BUDGET_ID){ cloudBudget=r; continue; } try{ await localPut(r); }catch(_){} }
+      /* 预算兼容：未建独立 budget 表时，records 里的 __budget__ 行仍是唯一数据源，
+         必须落到本地，否则新设备(手机)永远拉不到预算。本机有未推送的预算变更时不覆盖。 */
+      try{
+        const budgetPending=_pending.some(x=>x.id===BUDGET_ID)||_pendingDel.includes(BUDGET_ID);
+        if(!budgetPending){
+          if(cloudBudget) await localPut(cloudBudget);
+          else await localDel(BUDGET_ID);
+        }
+      }catch(_){}
     }
   }catch(e){}
   _budgetCache=null; // 云端预算可能变化，下次读取重新拉
@@ -600,25 +613,41 @@ async function pullCloud(){
    用一条特殊记录 id='__budget__' 承载，type='budget'、amount=预算值；所有统计/列表/导出均按 id 排除它。 */
 const BUDGET_ID='__budget__';
 let _budgetCache=null;
+let _budgetTableMissing=false; // 独立 budget 表不存在时置 true，避免每次都发无效请求
 async function loadBudget(){
   if(_budgetCache!==null) return _budgetCache;
   let v=0;
   // 优先从独立的 budget 表读取（预算与账单数据彻底分离）
-  try{
-    const {data,error}=await withTimeout(sb.from('budget').select('amount').eq('id','current').maybeSingle(),10000);
-    if(!error && data && data.amount>0){ v=Number(data.amount); _budgetCache=v; return v; }
-  }catch(e){}
-  // 回退：兼容尚未建 budget 表时的旧承载行
+  if(sb && !_budgetTableMissing){
+    try{
+      const {data,error}=await withTimeout(sb.from('budget').select('amount').eq('id','current').maybeSingle(),10000);
+      if(error){ if(String(error.message||'').indexOf('budget')>=0||error.code==='PGRST205'||error.code==='42P01') _budgetTableMissing=true; }
+      else if(data && data.amount>0){ v=Number(data.amount); _budgetCache=v; return v; }
+    }catch(e){ _budgetTableMissing=true; }
+  }
+  // 回退1：本地承载行
   try{ const all=await dbAll(); const b=all.find(r=>r.id===BUDGET_ID); if(b&&b.amount>0) v=Number(b.amount); }catch(e){}
+  // 回退2：本地没有就直接查云端 records（新设备首次打开、还没拉完数据时也能立刻显示预算）
+  if(!v && sb){
+    try{
+      const {data,error}=await withTimeout(sb.from('records').select('amount').eq('id',BUDGET_ID).maybeSingle(),10000);
+      if(!error && data && data.amount>0){
+        v=Number(data.amount);
+        try{ await localPut({id:BUDGET_ID,type:'budget',amount:v,date:'',remark:'',images:[],status:0}); }catch(_){}
+      }
+    }catch(e){}
+  }
   _budgetCache=v; return v;
 }
 async function saveBudget(val){
   _budgetCache=(val>0)?val:0;
   let okNew=false;
-  if(sb){
+  if(sb && !_budgetTableMissing){
     try{
-      await withTimeout(sb.from('budget').upsert({id:'current', amount:Number(val)||0}, {onConflict:'id'}),10000);
-      okNew=true;
+      // 注意：表不存在时 supabase-js 是「返回 error」而非抛异常，必须判 error，
+      // 否则会误判成功并删掉 records 里的承载行，导致预算丢失且不跨设备。
+      const {error}=await withTimeout(sb.from('budget').upsert({id:'current', amount:Number(val)||0}, {onConflict:'id'}),10000);
+      if(error){ okNew=false; _budgetTableMissing=true; } else { okNew=true; }
     }catch(e){ okNew=false; }
   }
   if(okNew){
